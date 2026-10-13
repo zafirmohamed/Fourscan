@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ZOAR Frames AR</title>
+  <style>
+    body { margin: 0; background: #000; }
+    #container { width: 100vw; height: 100vh; position: relative; overflow: hidden; }
+
+    /* ================= START SCREEN ================= */
+    #splash {
+      position: fixed; inset: 0; z-index: 20;
+      background: #000;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      transition: opacity 0.6s ease, visibility 0s 0s;
+      overflow: hidden;
+    }
+    #splash.hide {
+      opacity: 0; pointer-events: none; visibility: hidden;
+      transition: opacity 0.6s ease, visibility 0s 0.6s;
+    }
+
+    #bgGif {
+      position: absolute; inset: 0;
+      overflow: hidden; pointer-events: none;
+    }
+    #bgGif::after {
+      content: ""; position: absolute; top: 0; left: 0;
+      width: 118%; height: 118%;
+      background: url('sparkle.gif') center / cover no-repeat;
+    }
+
+    #logo {
+      position: relative; z-index: 1;
+      width: min(70vw, 340px); height: auto; display: block;
+    }
+    .logoText {
+      position: relative; z-index: 1;
+      color: #d9ad63; text-align: center;
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 54px; letter-spacing: 10px; line-height: 1;
+    }
+    .logoText small { display: block; margin-top: 10px; font-size: 16px; letter-spacing: 8px; }
+
+    #startBtn {
+      position: relative; z-index: 1;
+      margin-top: 16vh;
+      padding: 14px 34px; font-size: 20px; font-weight: 600;
+      border: none; border-radius: 12px;
+      color: #1c1306;
+      background: linear-gradient(180deg, #ebc47e, #cc9d57);
+      box-shadow: 0 0 22px rgba(224, 178, 100, 0.35);
+    }
+    #startBtn:disabled { opacity: 0.7; }
+
+    /* ================= BACK + PLAY/PAUSE + RESTART ================= */
+    #controls {
+      position: fixed; z-index: 10;
+      left: 50%; transform: translateX(-50%);
+      bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+      display: none; gap: 10px;
+    }
+    #controls button {
+      padding: 12px 20px; font-size: 16px;
+      border: none; border-radius: 999px;
+      background: rgba(0, 0, 0, 0.65); color: #fff;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.150.1/examples/jsm/",
+      "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <div id="container"></div>
+
+  <!-- START SCREEN -->
+  <div id="splash">
+    <div id="bgGif"></div>
+
+    <img id="logo" src="logo.png" alt="ZOAR FRAMES"
+         onerror="this.outerHTML='<div class=&quot;logoText&quot;>ZOAR<small>FRAMES</small></div>'">
+
+    <button id="startBtn">Tap to Scan</button>
+  </div>
+
+  <!-- control buttons -->
+  <div id="controls">
+    <button id="backBtn">Back</button>
+    <button id="playPauseBtn">Pause</button>
+    <button id="restartBtn">Restart</button>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { MindARThree } from 'mindar-image-three';
+
+    // ---- Targets: index = compiler la upload panna order (0,1,2,3) ----
+    // ratio = image height / width
+    const TARGETS = [
+      { video: './video1.mp4', ratio: 1.4343 },   // image 1: 9.9 x 14.2 cm
+      { video: './video2.mp4', ratio: 0.7042 },   // image 2: 14.2 x 10 cm
+      { video: './video3.mp4', ratio: 1.4126 },   // image 3: 14.3 x 20.2 cm
+      { video: './video4.mp4', ratio: 0.7030 }    // image 4: 20.2 x 14.2 cm
+    ];
+
+    // ---- Video elements (ovvoru target ku onnu) ----
+    const videos = TARGETS.map((t) => {
+      const v = document.createElement('video');
+      v.src = t.video;
+      v.loop = true;
+      v.playsInline = true;
+      v.setAttribute('playsinline', '');
+      v.preload = 'metadata';
+      return v;
+    });
+
+    // ---- Elements ----
+    const startBtn = document.querySelector('#startBtn');
+    const backBtn = document.querySelector('#backBtn');
+    const playPauseBtn = document.querySelector('#playPauseBtn');
+    const restartBtn = document.querySelector('#restartBtn');
+    const splash = document.querySelector('#splash');
+    const controls = document.querySelector('#controls');
+    const container = document.querySelector('#container');
+
+    // ---- State ----
+    let activeIndex = -1;     // ippo scan aagura image (-1 = edhuvum illa)
+    let lastIndex = 0;        // kadaisiya scan aana image (Restart ku)
+    let userPaused = false;   // user Pause click pannirukkaara
+    let current = null;       // ippo run aagura AR session
+
+    const refresh = () => {
+      videos.forEach((v, i) => {
+        if (i === activeIndex && !userPaused) v.play();
+        else v.pause();
+      });
+      playPauseBtn.textContent = userPaused ? 'Play' : 'Pause';
+    };
+
+    playPauseBtn.addEventListener('click', () => {
+      userPaused = !userPaused;
+      refresh();
+    });
+
+    restartBtn.addEventListener('click', () => {
+      videos[lastIndex].currentTime = 0;
+      userPaused = false;
+      refresh();
+    });
+
+    const start = async () => {
+      const mindarThree = new MindARThree({
+        container: container,
+        imageTargetSrc: './targets.mind',
+        maxTrack: 1,            // oru neram oru image mattum track (stable + fast)
+        filterMinCF: 0.001,
+        filterBeta: 1000,
+        warmupTolerance: 5,
+        missTolerance: 5
+      });
+      const { renderer, scene, camera } = mindarThree;
+      current = { mindarThree, renderer };
+
+      // ---- Plane GLB (oru dhadavai load, ovvoru target ku clone) ----
+      const gltf = await new GLTFLoader().loadAsync('./model.glb');
+
+      const buildPlane = (material, ratio) => {
+        const plane = gltf.scene.clone(true);
+        plane.traverse((o) => {
+          if (o.isMesh) o.material = material;
+        });
+
+        // Plane orientation auto detect
+        const raw = new THREE.Box3().setFromObject(plane).getSize(new THREE.Vector3());
+        if (raw.y <= raw.x && raw.y <= raw.z) {
+          plane.rotation.x = Math.PI / 2;
+        } else if (raw.x <= raw.y && raw.x <= raw.z) {
+          plane.rotation.y = Math.PI / 2;
+        }
+
+        // Pivot group: center + exact size fit
+        const pivot = new THREE.Group();
+        pivot.add(plane);
+        pivot.updateMatrixWorld(true);
+
+        const box = new THREE.Box3().setFromObject(pivot);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+
+        plane.position.sub(center);
+        pivot.scale.set(1 / size.x, ratio / size.y, 1);
+        pivot.position.z = 0.001;
+        return pivot;
+      };
+
+      // ---- Ovvoru image ku anchor + video plane ----
+      TARGETS.forEach((t, i) => {
+        const videoTexture = new THREE.VideoTexture(videos[i]);
+        videoTexture.encoding = THREE.sRGBEncoding;
+        videoTexture.flipY = false;
+        const material = new THREE.MeshBasicMaterial({
+          map: videoTexture,
+          side: THREE.DoubleSide
+        });
+
+        const anchor = mindarThree.addAnchor(i);
+        anchor.group.add(buildPlane(material, t.ratio));
+
+        anchor.onTargetFound = () => {
+          activeIndex = i;
+          lastIndex = i;
+          refresh();
+        };
+        anchor.onTargetLost = () => {
+          if (activeIndex === i) activeIndex = -1;
+          refresh();
+        };
+      });
+
+      await mindarThree.start();
+
+      controls.style.display = 'flex';
+
+      renderer.setAnimationLoop(() => {
+        renderer.render(scene, camera);
+      });
+    };
+
+    // ---- Back: scan page -> home page (session ellam reset) ----
+    const goHome = () => {
+      // 1) Ella videos um reset
+      videos.forEach((v) => { v.pause(); v.currentTime = 0; });
+
+      // 2) State reset
+      activeIndex = -1;
+      lastIndex = 0;
+      userPaused = false;
+      playPauseBtn.textContent = 'Pause';
+
+      // 3) Camera + AR stop
+      if (current) {
+        try { current.mindarThree.stop(); } catch (e) { console.warn(e); }
+        try { current.renderer.setAnimationLoop(null); current.renderer.dispose(); } catch (e) {}
+        current = null;
+      }
+      container.innerHTML = '';
+
+      // 4) Home page
+      controls.style.display = 'none';
+      startBtn.disabled = false;
+      startBtn.textContent = 'Tap to Scan';
+      splash.classList.remove('hide');
+    };
+
+    backBtn.addEventListener('click', goHome);
+
+    // ---- Tap to Scan ----
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Loading...';
+
+      // 4 videos ah um unlock pannum (mobile ku must, click kulla irukkanum)
+      videos.forEach((v) => v.play().then(() => v.pause()).catch(() => {}));
+
+      try {
+        await start();
+        splash.classList.add('hide');
+      } catch (e) {
+        console.error(e);
+        goHome();
+        alert('Camera access Allow pannitu marubadiyum try pannunga');
+      }
+    });
+  </script>
+</body>
+</html>
